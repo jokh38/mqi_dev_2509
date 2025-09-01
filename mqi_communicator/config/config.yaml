@@ -1,0 +1,193 @@
+logging:
+  path: "communicator_local.log"
+
+database:
+  path: "database/mqi_communicator.db"
+
+dashboard:
+  auto_start: true  # Set to false to disable automatic dashboard launch
+
+local_tools:
+  mqi_interpreter: "C:\MOQUI_SMC\mqi_interpreter\main_cli.py"
+  raw2dcm: "C:\MOQUI_SMC\RawToDCM\moqui_raw2dicom.py"
+
+main_workflow:
+  - name: "Generate Moqui Config"
+    type: local
+    target: generate_tps_config
+    on_start_status: "PROCESSING_CONFIG_GENERATION"
+    on_success_status: "COMPLETED_CONFIG_GENERATION"
+    on_failure_status: "FAILED_CONFIG_GENERATION"
+    inputs:
+      - "{case_path}/*"
+    outputs:
+      - "{case_path}/moqui_tps.in"
+    retry:
+      count: 0
+
+  - name: "Local Interpreter" # Required local step
+    type: local
+    target: run_interpreter
+    on_start_status: "PROCESSING_LOCAL_INTERPRETER"
+    on_success_status: "COMPLETED_LOCAL_INTERPRETER"
+    on_failure_status: "FAILED_LOCAL_INTERPRETER"
+    inputs:
+      - "{case_path}/*"
+    outputs:
+      - "{case_path}/intermediate/results.bin"
+    retry:
+      count: 0 # Local execution usually does not need retries
+
+  - name: "Remote Moqui Simulation"
+    type: remote
+    target: execute_commands
+    on_start_status: "PROCESSING_REMOTE_MOQUI"
+    on_success_status: "COMPLETED_REMOTE_MOQUI"
+    on_failure_status: "FAILED_REMOTE_MOQUI"
+    # Upload files to their designated remote locations
+    inputs:
+      # 1. Upload the original case files (DICOM, etc.) to the main remote case directory.
+      #    The remote Moqui process requires these files in the directory specified by DicomDir.
+      - source: "{case_path}/*"
+        destination: "{remote_case_dir}/"
+
+      # 2. Upload the interpreter results to the specific output directory.
+      #    The ParentDir parameter in mqi_tps.in points to this directory.
+      - source: "{case_path}/intermediate/"
+        destination: "{moqui_interpreter_outputs_dir}/{case_name}/"
+
+      # 3. Upload the moqui_tps.in file to the environment directory where the binary expects it.
+      - source: "{case_path}/mqi_tps.in"
+        destination: "~/tps_env/"
+    # Only simulation command runs remotely
+    commands:
+      - "~/tps_env/.tps_env"
+    # Download results
+    outputs:
+      - source: "{remote_case_dir}/Dose_raw/{case_id}/*"
+        destination: "{case_path}/raw_output/"
+    retry:
+      count: 3
+      delay: 60 # Retry every 60 seconds
+      on_error: # Only retry on these specific error types
+        - "network"
+        - "timeout"
+
+  - name: "Local Raw to DCM Conversion"
+    type: local
+    target: run_raw2dcm
+    on_start_status: "PROCESSING_LOCAL_RAW2DCM"
+    on_success_status: "COMPLETED"
+    on_failure_status: "FAILED_LOCAL_RAW2DCM"
+    inputs:
+      - "{case_path}/raw_output/*" # This step depends on the output of the previous step
+    outputs:
+      - "{case_path}/final_dcm/"
+    retry:
+      count: 0
+
+hpc:
+  host: "10.243.62.128"
+  user: "jokh38"
+  remote_base_dir: "~/MOQUI_SMC"
+  moqui_interpreter_outputs_dir: "~/Outputs_csv"
+  moqui_outputs_dir: "~/Dose_raw"
+ 
+  scp_command: "scp"
+  ssh_command: "ssh"
+  pueue_command: "~/.cargo/bin/pueue"
+
+scanner:
+  watch_path: "new_cases" # Directory to watch for new cases
+  # Time (in seconds) to wait for a directory to be "quiet" (no new file
+  # modifications) before it's considered complete and added to the queue.
+  quiescence_period_seconds: 5
+
+post_processing:
+  # Configuration for downloading results from HPC after successful completion.
+  download_results:
+    enabled: true
+    remote_filename: "RTDOSE.dcm" # The file to download from the remote case directory.
+    local_destination_dir: "completed_cases" # Directory to save the downloaded files.
+
+main_loop:
+  sleep_interval_seconds: 10 # Time to wait between polling for new cases
+  running_case_timeout_hours: 24 # After this many hours, a 'running' case with no status update is marked as failed.
+  # Parallel processing configuration
+  parallel_processing:
+    enabled: true # Enable parallel case processing
+    max_workers: 4 # Maximum number of concurrent processing threads
+    batch_size: 10 # Maximum number of cases to process in one batch
+    processing_timeout: 300.0 # Timeout in seconds for individual case processing
+  # Priority scheduling configuration
+  priority_scheduling:
+    enabled: true # Enable priority-based case scheduling
+    algorithm: "weighted_fair" # Options: "strict_priority", "weighted_fair", "aging"
+    aging_factor: 0.1 # Priority boost per hour of waiting (for aging algorithm)
+    starvation_threshold_hours: 24 # Hours after which low priority cases get boost
+
+pueue:
+  # List of all pueue groups that the application can manage.
+  # The first group in the list is used as the default for new cases.
+  # Note: Dynamic GPU detection is now enabled and will override this list
+  groups:
+    - "gpu_0"
+    - "gpu_1"
+    - "gpu_2"
+    - "gpu_3"
+    - "gpu_4"
+    - "gpu_5"
+    - "gpu_6"
+    - "gpu_7"
+
+tps_generator:
+  validation:
+    required_params:
+      - 'GPUID'
+      - 'DicomDir'
+      - 'logFilePath'
+      - 'OutputDir'
+      - 'BeamNumbers'
+  # Default paths for the remote Linux environment.
+  # These are used when not running in HPC mode or if hpc config is missing.
+  default_paths:
+    base_dir: "/home/gpuadmin/MOQUI_SMC"
+    interpreter_outputs_dir: "/home/gpuadmin/Outputs_csv"
+    outputs_dir: "/home/gpuadmin/Dose_raw"
+
+# Parameters for generating moqui_tps.in file generation
+# as per mqi_param_gen.md
+moqui_tps_parameters:
+  GPUID: 0  # Will be dynamically set from pueue_group
+  RandomSeed: -1932780356
+  UseAbsolutePath: true
+  Verbosity: 0
+  UsingPhantomGeo: true
+  PhantomDimX: 400
+  PhantomDimY: 400
+  PhantomDimZ: 400
+  PhantomUnitX: 1
+  PhantomUnitY: 1
+  PhantomUnitZ: 1
+  PhantomPositionX: -200.0
+  PhantomPositionY: -200.0
+  PhantomPositionZ: -380.0
+  Scorer: Dose
+  SupressStd: true
+  ReadStructure: true
+  ROIName: External
+  DicomDir: ""  # Will be dynamically set
+  logFilePath: ""  # Will be dynamically set
+  SourceType: FluenceMap
+  SimulationType: perBeam
+  ScoreToCTGrid: true
+  OutputFormat: raw
+  OverwriteResults: true
+  TotalThreads: -1
+  MaxHistoriesPerBatch: 10000
+  BeamNumbers: 1  # Will be dynamically set
+  ParticlesPerHistory: 1
+  TwoCentimeterMode: true
+  ParentDir: ""  # Will be dynamically set
+  OutputDir: ""  # Will be dynamically set
+  GantryNum: 0  # Will be dynamically set

@@ -1,0 +1,35 @@
+# Key-Value format. Values are populated dynamically at runtime.
+
+GPUID 0
+RandomSeed -1932780356
+UseAbsolutePath true
+Verbosity 0
+UsingPhantomGeo true
+PhantomDimX 400
+PhantomDimY 400
+PhantomDimZ 400
+PhantomUnitX 1
+PhantomUnitY 1
+PhantomUnitZ 1
+PhantomPositionX -200.0
+PhantomPositionY -200.0
+PhantomPositionZ -380.0
+Scorer Dose
+SupressStd true
+ReadStructure true
+ROIName External
+DicomDir /home/gpuadmin/MOQUI_SMC/1.2.840.113854.19.1.19271.1
+logFilePath /home/gpuadmin/Outputs_csv/1.2.840.113854.19.1.19271.1
+SourceType FluenceMap
+SimulationType perBeam
+ScoreToCTGrid true
+OutputFormat raw
+OverwriteResults true
+TotalThreads -1
+MaxHistoriesPerBatch 10000
+BeamNumbers 2
+ParticlesPerHistory 1
+TwoCentimeterMode true
+ParentDir /home/gpuadmin/Outputs_csv/1.2.840.113854.19.1.19271.1
+OutputDir /home/gpuadmin/Dose_raw/1.2.840.113854.19.1.19271.1
+GantryNum 0

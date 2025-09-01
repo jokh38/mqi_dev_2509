@@ -1,0 +1,160 @@
+📑 MQI Communicator – Functional Requirements Specification (Draft)
+1. Case Detection and Initialization
+
+The system shall continuously monitor the configured local directory (scanner.watch_path) for new case folders.
+
+A case folder is considered ready for processing when no modifications are detected within the configured quiescence period (scanner.quiescence_period_seconds).
+
+Once a case is detected:
+
+It shall be recorded in the cases table of the SQLite database with initial status submitted.
+
+The submitted_at timestamp shall be populated.
+
+Each case shall have a unique case_id for tracking across all modules.
+
+2. Data Transfer to HPC
+
+The system shall transfer the detected case folder from the local PC to the configured remote HPC directory (hpc.remote_base_dir) using SCP over SSH.
+
+All transfers must:
+
+Use SSH key-based authentication (no plaintext passwords).
+
+Preserve folder structure.
+
+Verify successful completion (exit code check).
+
+If a transfer fails:
+
+The case shall be marked as failed in the database.
+
+A descriptive error message shall be logged in communicator_local.log.
+
+Retries may be performed according to configurable retry policies (future extension).
+
+3. Remote Execution
+
+After transfer, the system shall submit a job to the remote Pueue daemon via SSH.
+
+The Pueue job shall:
+
+Be assigned to the correct resource group (default, gpu_a, gpu_b) according to the database resource table.
+
+Execute the configured remote command (e.g., python interpreter.py && python moquisim.py) in the case directory.
+
+Upon submission:
+
+The case status shall change from submitted → submitting.
+
+The pueue_task_id shall be recorded in the database.
+
+When the remote daemon confirms job acceptance, status updates to running.
+
+4. Status Tracking
+
+The cases table shall record the following lifecycle statuses:
+
+submitted → submitting → running → completed OR failed
+
+The system shall periodically query Pueue (via SSH) to retrieve job status.
+
+Updates shall be written to the database, including:
+
+progress (percentage if applicable)
+
+status_updated_at timestamp
+
+completed_at upon job completion or failure
+
+GPU resource states (gpu_resources table) shall be updated accordingly:
+
+available → assigned when a job starts
+
+assigned → available when the job completes successfully
+
+assigned → zombie if the job fails or becomes stuck
+
+5. Error Handling and Recovery
+
+Timeout Management:
+
+Any case remaining in running status longer than main_loop.running_case_timeout_hours shall be marked failed.
+
+Associated GPU resource shall be reset to available.
+
+Zombie Resource Recovery:
+
+Resources in zombie state shall be automatically reclaimed by the main loop.
+
+Process Stuck Detection:
+
+If no status_updated_at change is detected for a defined interval, the case shall be flagged for operator review.
+
+Logging Requirements:
+
+Every error must include case ID, operation, error type, and timestamp.
+
+Logs shall use rotating log files for long-term stability.
+
+6. Monitoring
+
+CLI Dashboard:
+
+Implemented using the Rich library for real-time visualization of cases, statuses, and resource allocation.
+
+Must display:
+
+Total cases per status (submitted, running, completed, failed)
+
+Active GPU group usage
+
+Recently updated cases (by timestamp)
+
+Health Monitoring:
+
+System health shall be inferred from database activity.
+
+If no DB updates occur within a configurable window, the system is considered unhealthy.
+
+Logs:
+
+Local logs (communicator_local.log) capture application-level events.
+
+Remote logs remain accessible via pueue log <task_id> on the HPC.
+
+7. Backup and Archival
+
+Database Backup:
+
+The SQLite database shall be backed up by an external Windows Scheduled Task running a batch script.
+
+The script shall produce timestamped copies (e.g., backup_YYYYMMDD.db) in the backups/ directory.
+
+Archiving of Case Data:
+
+The application itself will not perform archival.
+
+Operators may rely on OS-level tools or custom scripts for long-term data storage and cleanup.
+
+8. Security
+
+All communication with the remote HPC must use SSH key-based authentication.
+
+No plaintext passwords shall be stored in configuration files.
+
+Configuration (config/config.yaml) may specify alternative private key files via ssh_command or scp_command options.
+
+9. Operational Considerations
+
+Startup:
+
+The application shall initialize the database, confirm GPU resource entries exist, and start the case scanner before entering the main loop.
+
+Shutdown:
+
+On termination, the system shall gracefully stop scanning and persist all pending states to the database.
+
+Extensibility:
+
+Future features (e.g., retry policies, remote monitoring via web UI) shall build upon the current architecture without requiring RabbitMQ or additional daemons.

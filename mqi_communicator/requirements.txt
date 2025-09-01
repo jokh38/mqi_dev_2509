@@ -1,0 +1,10 @@
+pyyaml
+pytest
+pytest-cov
+black
+flake8
+mypy
+watchdog
+rich
+types-PyYAML
+pydicom
