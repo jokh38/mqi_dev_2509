@@ -4,6 +4,7 @@ Manages the execution flow of a case through different states.
 """
 from typing import Optional
 from pathlib import Path
+from multiprocessing import Queue
 from .states import BaseState, PreProcessingState
 from .config import Config
 from .database_handler import DatabaseHandler
@@ -17,7 +18,8 @@ class WorkflowManager:
     Context manager for the case workflow using the State pattern.
     """
     def __init__(self, case_id: str, case_path: Path, config: Config, db_handler: DatabaseHandler,
-                 local_handler: LocalHandler, remote_handler: RemoteHandler, logger: StructuredLogger):
+                 local_handler: LocalHandler, remote_handler: RemoteHandler, logger: StructuredLogger,
+                 status_queue: Optional[Queue] = None):
         self.case_id = case_id
         self.case_path = case_path
         self.config = config
@@ -25,8 +27,14 @@ class WorkflowManager:
         self.local_handler = local_handler
         self.remote_handler = remote_handler
         self.logger = logger
+        self.status_queue = status_queue
         self.current_state: Optional[BaseState] = PreProcessingState()
         self.is_running = False
+
+    def send_status_update(self, status: str, progress: int):
+        """Sends a status update to the master process via the queue."""
+        if self.status_queue:
+            self.status_queue.put((self.case_id, status, progress))
 
     def run_workflow(self):
         """

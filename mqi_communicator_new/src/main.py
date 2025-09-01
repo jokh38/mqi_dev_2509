@@ -7,30 +7,35 @@ import multiprocessing
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from typing import NoReturn
+from typing import NoReturn, Dict, Any
 
 from config import ConfigManager
 from database_handler import DatabaseHandler
 from logging_handler import LoggingHandler, LogContext
 from worker import worker_main
+from display_handler import DisplayHandler
 
 
 class CaseDetectionHandler(FileSystemEventHandler):
-    def __init__(self, case_queue: multiprocessing.Queue, db_handler: DatabaseHandler, logger):
+    def __init__(self, case_queue: multiprocessing.Queue, db_handler: DatabaseHandler, logger, display: DisplayHandler):
         self.case_queue = case_queue
         self.db_handler = db_handler
         self.logger = logger
+        self.display = display
 
     def on_created(self, event):
         if event.is_directory:
             case_path = Path(event.src_path)
             case_id = case_path.name
-            self.logger.info(f"New case detected: {case_id}", LogContext(case_id=case_id))
+            log_context = LogContext(case_id=case_id)
+            self.logger.info(f"New case detected: {case_id}", log_context)
+            self.display.add_log_entry(f"New case detected: {case_id}")
             try:
                 self.db_handler.add_case(case_id, str(case_path))
                 self.case_queue.put((case_id, str(case_path)))
             except Exception as e:
-                self.logger.error(f"Error adding case {case_id} to database: {e}", LogContext(case_id=case_id))
+                self.logger.error(f"Error adding case {case_id} to database: {e}", log_context)
+                self.display.add_log_entry(f"ERROR: Could not add case {case_id} to DB.")
 
 
 def main() -> NoReturn:
@@ -42,6 +47,7 @@ def main() -> NoReturn:
 
     logging_handler = LoggingHandler()
     logger = logging_handler.get_master_logger()
+    display = DisplayHandler()
 
     db_path = str(Path(config.paths.local.scan_directory).parent / "database/mqi_communicator.db")
     db_handler = DatabaseHandler(db_path)
@@ -49,35 +55,49 @@ def main() -> NoReturn:
     case_queue = multiprocessing.Queue()
     status_queue = multiprocessing.Queue()
 
-    # Start directory monitoring
-    event_handler = CaseDetectionHandler(case_queue, db_handler, logger)
+    active_workers: Dict[str, Any] = {}
+
+    display.start()
+
+    event_handler = CaseDetectionHandler(case_queue, db_handler, logger, display)
     observer = Observer()
     observer.schedule(event_handler, config.paths.local.scan_directory, recursive=False)
     observer.start()
-    logger.info(f"Started monitoring directory: {config.paths.local.scan_directory}")
+    display.add_log_entry(f"Monitoring directory: {config.paths.local.scan_directory}")
 
     try:
         with multiprocessing.Pool(processes=config.application.max_workers) as pool:
             while True:
-                # Check for new cases and dispatch them
-                if not case_queue.empty():
+                # Dispatch new cases from the queue
+                while not case_queue.empty() and len(active_workers) < config.application.max_workers:
                     case_id, case_path_str = case_queue.get()
-                    pool.apply_async(worker_main, args=(case_id, case_path_str, status_queue))
-                    logger.info(f"Dispatched case {case_id} to a worker.", LogContext(case_id=case_id))
+                    result = pool.apply_async(worker_main, args=(case_id, case_path_str, status_queue))
+                    active_workers[case_id] = result
+                    display.add_case(case_id)
+                    display.add_log_entry(f"Dispatched case {case_id} to worker pool.")
 
-                # Process status updates from workers (basic implementation)
+                # Process status updates from workers
                 while not status_queue.empty():
-                    case_id, status, message = status_queue.get()
-                    logger.info(f"STATUS from {case_id}: {status} - {message}", LogContext(case_id=case_id))
+                    case_id, status, progress = status_queue.get()
+                    display.update_case_progress(case_id, status, progress)
+                    if progress == 100 or "Failed" in status:
+                        display.remove_case(case_id, status)
+                        if case_id in active_workers:
+                            del active_workers[case_id]
 
-                time.sleep(config.application.scan_interval_seconds)
+                # Update system status display
+                display.update_system_status(len(active_workers), case_queue.qsize())
+
+                time.sleep(1) # More responsive display loop
 
     except KeyboardInterrupt:
-        logger.info("Shutting down gracefully...")
+        display.add_log_entry("Shutdown signal received. Waiting for workers...")
+        # pool.close() and pool.join() are handled by with statement
     finally:
         observer.stop()
         observer.join()
         db_handler.close()
+        display.stop()
         logging_handler.shutdown()
 
 
