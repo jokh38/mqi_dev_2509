@@ -49,8 +49,7 @@ def main() -> NoReturn:
     logger = logging_handler.get_master_logger()
     display = DisplayHandler()
 
-    db_path = str(Path(config.paths.local.scan_directory).parent / "database/mqi_communicator.db")
-    db_handler = DatabaseHandler(db_path)
+    db_handler = DatabaseHandler(config.paths.local.database_path)
 
     case_queue = multiprocessing.Queue()
     status_queue = multiprocessing.Queue()

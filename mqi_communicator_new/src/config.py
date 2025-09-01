@@ -20,6 +20,7 @@ class ExecutablesConfig(BaseModel):
 
 class LocalPathsConfig(BaseModel):
     scan_directory: str = Field(description="Directory to watch for new cases")
+    database_path: str = Field(description="Path to the SQLite database file")
     processing_directory: str = Field(description="Template path with {case_id} placeholder")
     raw_output_directory: str = Field(description="Template path for raw outputs")
     final_dicom_directory: str = Field(description="Template path for DICOM outputs")
