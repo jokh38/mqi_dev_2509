@@ -35,7 +35,7 @@ def worker_main(case_id: str, case_path_str: str, status_queue: Queue = None) ->
         logger.info(f"Worker (PID: {os.getpid()}) starting for case {case_id}", log_context)
 
         # Initialize handlers
-        db_handler = DatabaseHandler(config.paths.local.scan_directory + "/../database/mqi_communicator.db")
+        db_handler = DatabaseHandler(config.paths.local.database_path)
         local_handler = LocalHandler(config)
         remote_handler = RemoteHandler(config)
 
@@ -63,7 +63,7 @@ def worker_main(case_id: str, case_path_str: str, status_queue: Queue = None) ->
         logger.error(f"Worker for case {case_id} failed with unhandled exception: {e}", log_context)
         # The workflow itself should have sent a "Failed" status update.
         # We ensure the DB is updated as a fallback.
-        db = DatabaseHandler(config.paths.local.scan_directory + "/../database/mqi_communicator.db")
+        db = DatabaseHandler(config.paths.local.database_path)
         db.update_case_status(case_id, "FAILED")
         db.close()
         sys.exit(1)

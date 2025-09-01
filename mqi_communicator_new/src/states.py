@@ -94,7 +94,8 @@ class HpcExecutionState(BaseState):
 
         try:
             remote_dir = context.config.paths.hpc.output_csv_dir.format(case_id=context.case_id)
-            command = f"cd {remote_dir} && moqui moqui_tps.in && touch moqui_done.marker"
+            # Run the simulation and marker creation in sequence, but have the whole sequence run in the background.
+            command = f"cd {remote_dir} && nohup sh -c 'moqui moqui_tps.in && touch moqui_done.marker' > moqui.log 2>&1 &"
 
             success, stdout, stderr = context.remote_handler.execute_remote_command(command)
             if not success:
