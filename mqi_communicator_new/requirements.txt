@@ -1,0 +1,5 @@
+pydantic
+pyyaml
+paramiko
+watchdog
+rich
