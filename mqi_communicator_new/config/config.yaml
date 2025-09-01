@@ -1,4 +1,8 @@
-# config/config.yaml
+
+
+dashboard:
+  auto_start: true  # Set to false to disable automatic dashboard launch
+
 
 # Settings for the main application controller
 application:
@@ -20,6 +24,8 @@ paths:
   local:
     # P1 will watch this directory for new case subdirectories.
     scan_directory: "C:/MOQUI_SMC/new_cases"
+    # Path to the log file for the application.
+    logging: "communicator_local.log"
     # Path to the application's central database file.
     database_path: "database/mqi_communicator.db"
     # The following paths use a {case_id} placeholder that will be dynamically replaced.
@@ -37,8 +43,59 @@ paths:
 
 # Connection details for the HPC server.
 hpc_connection:
-  host: "mgmt01"
-  port: 22
+  host: "10.243.62.128"
   user: "jokh38"
   # Using SSH keys is strongly recommended over passwords for security.
   ssh_key_path: "C:/Users/your_user/.ssh/id_rsa"
+
+tps_generator:
+  validation:
+    required_params:
+      - 'GPUID'
+      - 'DicomDir'
+      - 'logFilePath'
+      - 'OutputDir'
+      - 'BeamNumbers'
+  # Default paths for the remote Linux environment.
+  # These are used when not running in HPC mode or if hpc config is missing.
+  default_paths:
+    base_dir: "/home/gpuadmin/MOQUI_SMC"
+    interpreter_outputs_dir: "/home/gpuadmin/Outputs_csv"
+    outputs_dir: "/home/gpuadmin/Dose_raw"
+
+# Parameters for generating moqui_tps.in file generation
+# as per mqi_param_gen.md
+moqui_tps_parameters:
+  GPUID: 0  # Will be dynamically set from pueue_group
+  RandomSeed: -1932780356
+  UseAbsolutePath: true
+  Verbosity: 0
+  UsingPhantomGeo: true
+  PhantomDimX: 400
+  PhantomDimY: 400
+  PhantomDimZ: 400
+  PhantomUnitX: 1
+  PhantomUnitY: 1
+  PhantomUnitZ: 1
+  PhantomPositionX: -200.0
+  PhantomPositionY: -200.0
+  PhantomPositionZ: -380.0
+  Scorer: Dose
+  SupressStd: true
+  ReadStructure: true
+  ROIName: External
+  DicomDir: ""  # Will be dynamically set
+  logFilePath: ""  # Will be dynamically set
+  SourceType: FluenceMap
+  SimulationType: perBeam
+  ScoreToCTGrid: true
+  OutputFormat: raw
+  OverwriteResults: true
+  TotalThreads: -1
+  MaxHistoriesPerBatch: 10000
+  BeamNumbers: 1  # Will be dynamically set
+  ParticlesPerHistory: 1
+  TwoCentimeterMode: true
+  ParentDir: ""  # Will be dynamically set
+  OutputDir: ""  # Will be dynamically set
+  GantryNum: 0  # Will be dynamically set
