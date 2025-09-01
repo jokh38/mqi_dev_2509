@@ -2,67 +2,88 @@
 Entry point for a single worker process.
 Each worker handles exactly one case from start to finish.
 """
+import sys
+import os
+from pathlib import Path
+from multiprocessing import Queue
 from typing import NoReturn
 
+# Add project root to path to allow absolute imports
+project_root = Path(__file__).resolve().parent.parent
+sys.path.append(str(project_root))
 
-def worker_main(case_id: str, status_queue_ref: str = None) -> NoReturn:
+from src.config import ConfigManager
+from src.database_handler import DatabaseHandler
+from src.logging_handler import LoggingHandler, LogContext
+from src.local_handler import LocalHandler
+from src.remote_handler import RemoteHandler
+from src.workflow_manager import WorkflowManager
+
+
+def worker_main(case_id: str, case_path_str: str, status_queue: Queue = None) -> NoReturn:
     """
     Entry point for a worker process that handles a single case.
-    
-    Responsibilities:
-    1. Receive a case_id as primary argument
-    2. Instantiate a WorkflowManager to execute the case's workflow
-    3. Send status updates to the shared multiprocessing.Queue
-    4. Use DatabaseHandler to record each step's status
-    
-    Args:
-        case_id: Unique identifier for the case to process
-        status_queue_ref: Reference to shared status queue for master communication
     """
-    # TODO: Implementation steps:
-    # 1. Load configuration (each worker needs its own ConfigManager instance)
-    # 2. Set up worker-specific logging with case_id context
-    # 3. Initialize worker's own DatabaseHandler instance (process-safe)
-    # 4. Initialize LocalHandler and RemoteHandler
-    # 5. Create WorkflowManager with all handlers
-    # 6. Set up status reporting to master process via queue
-    # 7. Run workflow and handle exceptions
-    # 8. Report final status and cleanup
-    #
-    # Example structure:
-    # try:
-    #     config_manager = ConfigManager("config/config.yaml")
-    #     config = config_manager.get_config()
-    #     
-    #     logging_handler = LoggingHandler()
-    #     logger = logging_handler.get_worker_logger(os.getpid())
-    #     
-    #     # Each worker gets its own DB connection
-    #     db_handler = DatabaseHandler(config.database.path)
-    #     local_handler = LocalHandler(config)
-    #     remote_handler = RemoteHandler(config)
-    #     
-    #     # Send status updates to master
-    #     def send_status_update(status: str, message: str = ""):
-    #         if status_queue_ref:
-    #             status_queue.put((case_id, status, message))
-    #     
-    #     send_status_update("started", "Worker process initialized")
-    #     
-    #     # Create and run workflow
-    #     workflow = WorkflowManager(case_id, config, db_handler, local_handler, remote_handler, logger)
-    #     workflow.run_workflow()
-    #     
-    #     send_status_update("completed", "Case processing finished")
-    #     
-    # except Exception as e:
-    #     logger.error_with_exception(f"Worker failed for case {case_id}", e)
-    #     if status_queue_ref:
-    #         status_queue.put((case_id, "failed", str(e)))
-    #     sys.exit(1)
-    pass  # Implementation will be added later
+    # Configuration and Logging
+    config_manager = ConfigManager("config/config.yaml")
+    config = config_manager.get_config()
+    logging_handler = LoggingHandler()
+    logger = logging_handler.get_worker_logger(os.getpid())
+    log_context = LogContext(case_id=case_id)
+
+    def send_status(status: str, message: str = ""):
+        if status_queue:
+            status_queue.put((case_id, status, message))
+
+    try:
+        logger.info(f"Worker (PID: {os.getpid()}) starting for case {case_id}", log_context)
+        send_status("STARTED", f"Worker {os.getpid()}")
+
+        # Initialize handlers
+        db_handler = DatabaseHandler(config.paths.local.scan_directory + "/../database/mqi_communicator.db")
+        local_handler = LocalHandler(config)
+        remote_handler = RemoteHandler(config)
+
+        # Get case path
+        case_path = Path(case_path_str)
+
+        # Create and run workflow
+        workflow = WorkflowManager(
+            case_id=case_id,
+            case_path=case_path,
+            config=config,
+            db_handler=db_handler,
+            local_handler=local_handler,
+            remote_handler=remote_handler,
+            logger=logger
+        )
+        workflow.run_workflow()
+
+        final_status = workflow.get_current_status()
+        logger.info(f"Worker finished for case {case_id} with status: {final_status}", log_context)
+        send_status(final_status, "Workflow finished")
+        sys.exit(0)
+
+    except Exception as e:
+        logger.error(f"Worker for case {case_id} failed with unhandled exception: {e}", log_context)
+        send_status("FAILED", str(e))
+        # Ensure database reflects the failure
+        db = DatabaseHandler(config.paths.local.scan_directory + "/../database/mqi_communicator.db")
+        db.update_case_status(case_id, "FAILED")
+        db.close()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    # This would be called with a case_id argument
-    pass
+    if len(sys.argv) != 3:
+        print("Usage: python worker.py <case_id> <case_path>")
+        sys.exit(1)
+
+    case_id_arg = sys.argv[1]
+    case_path_arg = sys.argv[2]
+
+    # In a real scenario, the queue would be passed by the master process
+    # For standalone testing, we can create a dummy queue.
+    dummy_queue = Queue()
+
+    worker_main(case_id_arg, case_path_arg, dummy_queue)

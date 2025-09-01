@@ -2,7 +2,12 @@
 Handles HPC communication (SSH/SFTP).
 Manages remote execution and file transfer operations.
 """
-from typing import NamedTuple
+import fnmatch
+import time
+from typing import NamedTuple, List, Any
+from pathlib import Path
+import paramiko
+from .config import Config
 
 
 class TransferResult(NamedTuple):
@@ -17,124 +22,112 @@ class TransferResult(NamedTuple):
 class RemoteHandler:
     """
     Handler for HPC communication via SSH/SFTP.
-    
-    Responsibilities:
-    1. Establish SSH connections to HPC
-    2. Transfer files via SFTP (upload/download)
-    3. Execute remote commands via SSH
-    4. Poll for job completion status
-    5. Provide robust error handling for remote operations
     """
-    
-    def __init__(self, config) -> None:
-        """
-        Initialize the RemoteHandler with configuration.
+    def __init__(self, config: Config, max_retries: int = 3, retry_delay: int = 5):
+        self.hpc_config = config.hpc_connection
+        self.ssh_client = None
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+
+    def _retry_on_failure(self, operation: callable) -> Any:
+        """Retry an operation with a simple backoff mechanism."""
+        for attempt in range(self.max_retries):
+            try:
+                return operation()
+            except (paramiko.SSHException, IOError) as e:
+                if attempt == self.max_retries - 1:
+                    raise e
+                time.sleep(self.retry_delay * (attempt + 1))
+
+    def _establish_connection(self):
+        """Establish SSH connection if not already active."""
+        if self.ssh_client and self.ssh_client.get_transport() and self.ssh_client.get_transport().is_active():
+            return
+
+        def connect():
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(
+                hostname=self.hpc_config.host,
+                port=self.hpc_config.port,
+                username=self.hpc_config.user,
+                key_filename=str(Path(self.hpc_config.ssh_key_path).expanduser()),
+                timeout=10
+            )
+            self.ssh_client = client
         
-        Args:
-            config: Configuration object with HPC connection details
-        """
-        pass  # Implementation will be added later
-    
-    def upload_files(self, local_dir: str, remote_dir: str, file_patterns: list) -> TransferResult:
-        """
-        Upload files to HPC via SFTP.
+        self._retry_on_failure(connect)
+
+    def _create_remote_directory(self, sftp: paramiko.SFTPClient, remote_path: str):
+        """Create a remote directory recursively."""
+        dirs = []
+        path = remote_path
+        while path != '/':
+            try:
+                sftp.stat(path)
+                break
+            except FileNotFoundError:
+                dirs.append(Path(path).name)
+                path = str(Path(path).parent)
         
-        Args:
-            local_dir: Local directory containing files to upload
-            remote_dir: Remote directory to upload files to
-            file_patterns: List of file patterns to match (e.g., ['*.csv', 'moqui_tps.in'])
+        for d in reversed(dirs):
+            path = str(Path(path) / d)
+            sftp.mkdir(path)
+
+    def upload_files(self, local_dir: Path, remote_dir: str, file_patterns: List[str]) -> TransferResult:
+        self._establish_connection()
+        sftp = self.ssh_client.open_sftp()
+        try:
+            self._create_remote_directory(sftp, remote_dir)
+            files_to_upload = []
+            for pattern in file_patterns:
+                files_to_upload.extend(list(local_dir.glob(pattern)))
             
-        Returns:
-            TransferResult with success status and transfer information
-        """
-        # TODO: Implementation steps:
-        # 1. Establish SSH connection using paramiko or fabric
-        # 2. Open SFTP channel
-        # 3. Create remote directory if it doesn't exist
-        # 4. Find matching files using pathlib.glob() with patterns
-        # 5. Upload each file with progress tracking
-        # 6. Verify uploaded file sizes match local files
-        # 7. Return TransferResult with success, message, files_transferred count
-        # 8. Handle connection errors, permission errors, disk space errors
-        # 9. Use retry logic for transient failures
-        pass  # Implementation will be added later
-    
-    def download_files(self, remote_dir: str, local_dir: str, file_patterns: list) -> TransferResult:
-        """
-        Download files from HPC via SFTP.
-        
-        Args:
-            remote_dir: Remote directory containing files to download
-            local_dir: Local directory to download files to
-            file_patterns: List of file patterns to match (e.g., ['*.raw'])
+            for local_file in files_to_upload:
+                remote_file = f"{remote_dir}/{local_file.name}"
+                sftp.put(str(local_file), remote_file)
             
-        Returns:
-            TransferResult with success status and transfer information
-        """
-        # TODO: Implementation steps:
-        # 1. Establish SSH/SFTP connection
-        # 2. List remote directory contents
-        # 3. Filter files matching patterns (use fnmatch or glob patterns)
-        # 4. Create local directory if needed
-        # 5. Download each matching file
-        # 6. Verify downloaded file integrity (size, checksum if available)
-        # 7. Return detailed TransferResult
-        # 8. Handle network interruptions with retry logic
-        pass  # Implementation will be added later
-    
-    def execute_remote_command(self, command: str, timeout: int = 600) -> bool:
-        """
-        Execute a command on the HPC via SSH.
-        
-        Args:
-            command: Command to execute on the remote system
-            timeout: Command timeout in seconds
+            return TransferResult(True, f"Uploaded {len(files_to_upload)} files.", len(files_to_upload))
+        finally:
+            sftp.close()
+
+    def download_files(self, remote_dir: str, local_dir: Path, file_patterns: List[str]) -> TransferResult:
+        self._establish_connection()
+        sftp = self.ssh_client.open_sftp()
+        try:
+            local_dir.mkdir(parents=True, exist_ok=True)
+            remote_files = sftp.listdir(remote_dir)
+            files_to_download = []
+            for pattern in file_patterns:
+                files_to_download.extend(fnmatch.filter(remote_files, pattern))
             
-        Returns:
-            True if command executed successfully, False otherwise
-        """
-        # TODO: Implementation steps:
-        # 1. Establish SSH connection
-        # 2. Execute command with timeout
-        # 3. Capture stdout, stderr, and exit code
-        # 4. Log command execution details
-        # 5. Return True for exit code 0, False otherwise
-        # 6. Handle SSH connection errors, timeout errors
-        # 7. Consider using fabric for higher-level operations
-        pass  # Implementation will be added later
-    
-    def check_job_status(self, case_id: str) -> str:
-        """
-        Check the status of the remote job.
-        
-        Args:
-            case_id: Case identifier to check status for
-            
-        Returns:
-            Status string (e.g., 'running', 'completed', 'failed')
-        """
-        # TODO: Implementation steps:
-        # 1. Check if output files exist in remote directory
-        # 2. Look for job completion markers (e.g., .done file, specific output files)
-        # 3. Check process status if job management system is used
-        # 4. Parse log files for completion status
-        # 5. Return standardized status string
-        # 6. Handle cases where job status is ambiguous
-        pass  # Implementation will be added later
-    
-    # TODO: Add helper methods:
-    # def _establish_connection(self) -> paramiko.SSHClient:
-    #     """Establish SSH connection with error handling"""
-    #     # Load SSH key, connect with timeout, handle auth failures
-    #     
-    # def _create_remote_directory(self, sftp: paramiko.SFTPClient, remote_path: str) -> None:
-    #     """Create remote directory recursively"""
-    #     
-    # def _get_file_list(self, local_dir: Path, patterns: List[str]) -> List[Path]:
-    #     """Get list of files matching patterns"""
-    #     
-    # def _verify_transfer(self, local_file: Path, remote_file: str, sftp: paramiko.SFTPClient) -> bool:
-    #     """Verify file transfer integrity"""
-    #     
-    # def _retry_on_failure(self, operation: callable, max_attempts: int = 3) -> Any:
-    #     """Retry operation with exponential backoff"""
+            for remote_file_name in files_to_download:
+                remote_file_path = f"{remote_dir}/{remote_file_name}"
+                local_file_path = local_dir / remote_file_name
+                sftp.get(remote_file_path, str(local_file_path))
+
+            return TransferResult(True, f"Downloaded {len(files_to_download)} files.", len(files_to_download))
+        finally:
+            sftp.close()
+
+    def execute_remote_command(self, command: str, timeout: int = 600) -> tuple[bool, str, str]:
+        self._establish_connection()
+        stdin, stdout, stderr = self.ssh_client.exec_command(command, timeout=timeout)
+        exit_code = stdout.channel.recv_exit_status()
+        return exit_code == 0, stdout.read().decode(), stderr.read().decode()
+
+    def check_job_completion(self, remote_dir: str, completion_marker: str) -> bool:
+        """Check for the existence of a completion marker file."""
+        self._establish_connection()
+        sftp = self.ssh_client.open_sftp()
+        try:
+            sftp.stat(f"{remote_dir}/{completion_marker}")
+            return True
+        except FileNotFoundError:
+            return False
+        finally:
+            sftp.close()
+
+    def close(self):
+        if self.ssh_client:
+            self.ssh_client.close()

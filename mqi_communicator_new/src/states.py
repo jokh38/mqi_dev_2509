@@ -2,28 +2,20 @@
 Contains all State classes defining each workflow step.
 Implements the State design pattern for workflow management.
 """
+import time
 from abc import ABC, abstractmethod
 from typing import Optional
-
+from pathlib import Path
+from .logging_handler import LogContext
 
 class BaseState(ABC):
     """
     Abstract base class for all workflow states.
-    
-    Each concrete state implements the execute method to perform
-    its specific task and return the next state in the workflow.
     """
-    
     @abstractmethod
     def execute(self, context) -> Optional['BaseState']:
         """
         Execute the state's specific task.
-        
-        Args:
-            context: The workflow context (WorkflowManager)
-            
-        Returns:
-            The next state in the workflow, or None if this is a terminal state
         """
         pass
 
@@ -32,160 +24,145 @@ class PreProcessingState(BaseState):
     """
     State for handling local preprocessing using mqi_interpreter (P2).
     """
-    
     def execute(self, context) -> Optional[BaseState]:
-        """
-        Execute local preprocessing step.
+        log_context = LogContext(case_id=context.case_id, operation="preprocess")
+        context.logger.info("Starting preprocessing", log_context)
+        context.db_handler.record_workflow_step(context.case_id, "preprocessing", "STARTED")
         
-        Returns:
-            FileUploadState on success, None on failure
-        """
-        # TODO: Implementation pattern:
-        # try:
-        #     context.logger.info("Starting preprocessing", LogContext(case_id=context.case_id, operation="preprocess"))
-        #     context.db_handler.record_workflow_step(context.case_id, "preprocessing", "started")
-        #     
-        #     result = context.local_handler.execute_mqi_interpreter(context.case_id)
-        #     if result.success:
-        #         context.logger.info("Preprocessing completed successfully", LogContext(case_id=context.case_id, operation="preprocess"))
-        #         context.db_handler.record_workflow_step(context.case_id, "preprocessing", "completed")
-        #         return FileUploadState()
-        #     else:
-        #         context.logger.error(f"Preprocessing failed: {result.error}", LogContext(case_id=context.case_id, operation="preprocess"))
-        #         context.db_handler.record_workflow_step(context.case_id, "preprocessing", "failed", result.error)
-        #         return None
-        # except Exception as e:
-        #     context.logger.error_with_exception("Preprocessing exception", e, LogContext(case_id=context.case_id, operation="preprocess"))
-        #     context.db_handler.record_workflow_step(context.case_id, "preprocessing", "error", str(e))
-        #     return None
-        pass  # Implementation will be added later
+        try:
+            result = context.local_handler.execute_mqi_interpreter(context.case_id, context.case_path)
+            if result.success:
+                context.logger.info("Preprocessing completed successfully", log_context)
+                context.db_handler.record_workflow_step(context.case_id, "preprocessing", "COMPLETED")
+                return FileUploadState()
+            else:
+                context.logger.error(f"Preprocessing failed: {result.error}", log_context)
+                context.db_handler.record_workflow_step(context.case_id, "preprocessing", "FAILED", result.error)
+                return None
+        except Exception as e:
+            context.logger.error(f"Preprocessing exception: {e}", log_context)
+            context.db_handler.record_workflow_step(context.case_id, "preprocessing", "FAILED", str(e))
+            return None
 
 
 class FileUploadState(BaseState):
     """
     State for uploading files to HPC via SFTP.
     """
-    
     def execute(self, context) -> Optional[BaseState]:
-        """
-        Upload necessary files to HPC.
+        log_context = LogContext(case_id=context.case_id, operation="upload")
+        context.logger.info("Starting file upload", log_context)
+        context.db_handler.record_workflow_step(context.case_id, "file_upload", "STARTED")
         
-        Returns:
-            HpcExecutionState on success, None on failure
-        """
-        # TODO: Implementation pattern:
-        # try:
-        #     context.logger.info("Starting file upload", LogContext(case_id=context.case_id, operation="upload"))
-        #     context.db_handler.record_workflow_step(context.case_id, "file_upload", "started")
-        #     
-        #     # Get paths from config
-        #     local_dir = context.config.resolve_case_path(context.config.paths.local.processing_directory, context.case_id)
-        #     remote_dir = context.config.resolve_case_path(context.config.paths.hpc.output_csv_dir, context.case_id)
-        #     file_patterns = ["*.csv", "moqui_tps.in"]
-        #     
-        #     result = context.remote_handler.upload_files(local_dir, remote_dir, file_patterns)
-        #     if result.success:
-        #         context.logger.info(f"Upload completed: {result.files_transferred} files", LogContext(case_id=context.case_id, operation="upload"))
-        #         context.db_handler.record_workflow_step(context.case_id, "file_upload", "completed")
-        #         return HpcExecutionState()
-        #     else:
-        #         context.logger.error(f"Upload failed: {result.message}", LogContext(case_id=context.case_id, operation="upload"))
-        #         context.db_handler.record_workflow_step(context.case_id, "file_upload", "failed", result.message)
-        #         return None
-        # except Exception as e:
-        #     context.logger.error_with_exception("Upload exception", e, LogContext(case_id=context.case_id, operation="upload"))
-        #     return None
-        pass  # Implementation will be added later
+        try:
+            local_dir = Path(context.config.paths.local.processing_directory.format(case_id=context.case_id))
+            remote_dir = context.config.paths.hpc.output_csv_dir.format(case_id=context.case_id)
+            file_patterns = ["*.csv", "moqui_tps.in"]
+
+            result = context.remote_handler.upload_files(local_dir, remote_dir, file_patterns)
+            if result.success:
+                context.logger.info(f"Upload completed: {result.files_transferred} files", log_context)
+                context.db_handler.record_workflow_step(context.case_id, "file_upload", "COMPLETED")
+                return HpcExecutionState()
+            else:
+                context.logger.error(f"Upload failed: {result.message}", log_context)
+                context.db_handler.record_workflow_step(context.case_id, "file_upload", "FAILED", result.message)
+                return None
+        except Exception as e:
+            context.logger.error(f"Upload exception: {e}", log_context)
+            context.db_handler.record_workflow_step(context.case_id, "file_upload", "FAILED", str(e))
+            return None
 
 
 class HpcExecutionState(BaseState):
     """
     State for executing MOQUI simulation on HPC via SSH.
     """
-    
     def execute(self, context) -> Optional[BaseState]:
-        """
-        Execute MOQUI simulation on HPC.
+        log_context = LogContext(case_id=context.case_id, operation="hpc_execute")
+        context.logger.info("Starting HPC execution", log_context)
+        context.db_handler.record_workflow_step(context.case_id, "hpc_execution", "STARTED")
         
-        Returns:
-            DownloadState on success, None on failure
-        """
-        # TODO: Implementation pattern:
-        # try:
-        #     context.logger.info("Starting HPC execution", LogContext(case_id=context.case_id, operation="hpc_execute"))
-        #     context.db_handler.record_workflow_step(context.case_id, "hpc_execution", "started")
-        #     
-        #     # Build MOQUI execution command
-        #     remote_dir = context.config.resolve_case_path(context.config.paths.hpc.output_csv_dir, context.case_id)
-        #     command = f"cd {remote_dir} && moqui moqui_tps.in"
-        #     
-        #     success = context.remote_handler.execute_remote_command(command)
-        #     if success:
-        #         # Wait and poll for completion
-        #         while True:
-        #             status = context.remote_handler.check_job_status(context.case_id)
-        #             if status == "completed":
-        #                 context.logger.info("HPC execution completed", LogContext(case_id=context.case_id, operation="hpc_execute"))
-        #                 context.db_handler.record_workflow_step(context.case_id, "hpc_execution", "completed")
-        #                 return DownloadState()
-        #             elif status == "failed":
-        #                 context.logger.error("HPC execution failed", LogContext(case_id=context.case_id, operation="hpc_execute"))
-        #                 context.db_handler.record_workflow_step(context.case_id, "hpc_execution", "failed")
-        #                 return None
-        #             time.sleep(context.config.application.polling_interval_seconds)
-        #     else:
-        #         context.logger.error("Failed to start HPC execution", LogContext(case_id=context.case_id, operation="hpc_execute"))
-        #         return None
-        # except Exception as e:
-        #     context.logger.error_with_exception("HPC execution exception", e, LogContext(case_id=context.case_id, operation="hpc_execute"))
-        #     return None
-        pass  # Implementation will be added later
+        try:
+            remote_dir = context.config.paths.hpc.output_csv_dir.format(case_id=context.case_id)
+            command = f"cd {remote_dir} && moqui moqui_tps.in && touch moqui_done.marker"
+
+            success, stdout, stderr = context.remote_handler.execute_remote_command(command)
+            if not success:
+                error_message = f"Failed to start HPC execution. Stderr: {stderr}"
+                context.logger.error(error_message, log_context)
+                context.db_handler.record_workflow_step(context.case_id, "hpc_execution", "FAILED", error_message)
+                return None
+
+            # Polling for completion marker
+            remote_dose_dir = context.config.paths.hpc.dose_raw_dir.format(case_id=context.case_id)
+            while True:
+                if context.remote_handler.check_job_completion(remote_dose_dir, "dose.raw"):
+                    context.logger.info("HPC execution completed", log_context)
+                    context.db_handler.record_workflow_step(context.case_id, "hpc_execution", "COMPLETED")
+                    return DownloadState()
+
+                # A more robust implementation would check for failure markers too
+                time.sleep(context.config.application.polling_interval_seconds)
+
+        except Exception as e:
+            context.logger.error(f"HPC execution exception: {e}", log_context)
+            context.db_handler.record_workflow_step(context.case_id, "hpc_execution", "FAILED", str(e))
+            return None
 
 
 class DownloadState(BaseState):
     """
     State for downloading result files from HPC via SFTP.
     """
-    
     def execute(self, context) -> Optional[BaseState]:
-        """
-        Download result files from HPC.
-        
-        Returns:
-            PostProcessingState on success, None on failure
-        """
-        # TODO: Implementation pattern similar to FileUploadState:
-        # - Log start of download operation
-        # - Get remote and local paths from config
-        # - Call remote_handler.download_files() with patterns ["*.raw"]
-        # - Log results and update database
-        # - Return PostProcessingState() on success, None on failure
-        pass  # Implementation will be added later
+        log_context = LogContext(case_id=context.case_id, operation="download")
+        context.logger.info("Starting file download", log_context)
+        context.db_handler.record_workflow_step(context.case_id, "download", "STARTED")
+
+        try:
+            remote_dir = context.config.paths.hpc.dose_raw_dir.format(case_id=context.case_id)
+            local_dir = Path(context.config.paths.local.raw_output_directory.format(case_id=context.case_id))
+            file_patterns = ["*.raw"]
+
+            result = context.remote_handler.download_files(remote_dir, local_dir, file_patterns)
+            if result.success:
+                context.logger.info(f"Download completed: {result.files_transferred} files", log_context)
+                context.db_handler.record_workflow_step(context.case_id, "download", "COMPLETED")
+                return PostProcessingState()
+            else:
+                context.logger.error(f"Download failed: {result.message}", log_context)
+                context.db_handler.record_workflow_step(context.case_id, "download", "FAILED", result.message)
+                return None
+        except Exception as e:
+            context.logger.error(f"Download exception: {e}", log_context)
+            context.db_handler.record_workflow_step(context.case_id, "download", "FAILED", str(e))
+            return None
 
 
 class PostProcessingState(BaseState):
     """
     State for handling local postprocessing using RawToDCM (P3).
     """
-    
     def execute(self, context) -> Optional[BaseState]:
-        """
-        Execute local postprocessing step.
-        
-        Returns:
-            None (terminal state)
-        """
-        # TODO: Implementation pattern similar to PreProcessingState:
-        # - Call local_handler.execute_raw_to_dicom()
-        # - Log and record results
-        # - Update case status to "completed" on success
-        # - Return None (terminal state)
-        pass  # Implementation will be added later
+        log_context = LogContext(case_id=context.case_id, operation="postprocess")
+        context.logger.info("Starting postprocessing", log_context)
+        context.db_handler.record_workflow_step(context.case_id, "postprocessing", "STARTED")
 
-
-# TODO: Add error handling states:
-# class ErrorState(BaseState):
-#     """State for handling errors and cleanup"""
-#     
-# class RetryState(BaseState):
-#     """State for implementing retry logic with exponential backoff"""
+        try:
+            result = context.local_handler.execute_raw_to_dicom(context.case_id)
+            if result.success:
+                context.logger.info("Postprocessing completed successfully", log_context)
+                context.db_handler.record_workflow_step(context.case_id, "postprocessing", "COMPLETED")
+                context.db_handler.update_case_status(context.case_id, "COMPLETED", 100)
+                return None # Terminal state
+            else:
+                context.logger.error(f"Postprocessing failed: {result.error}", log_context)
+                context.db_handler.record_workflow_step(context.case_id, "postprocessing", "FAILED", result.error)
+                context.db_handler.update_case_status(context.case_id, "FAILED")
+                return None
+        except Exception as e:
+            context.logger.error(f"Postprocessing exception: {e}", log_context)
+            context.db_handler.record_workflow_step(context.case_id, "postprocessing", "FAILED", str(e))
+            context.db_handler.update_case_status(context.case_id, "FAILED")
+            return None
